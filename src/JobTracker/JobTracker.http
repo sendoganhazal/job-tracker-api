@@ -1,0 +1,29 @@
+### Duruma göre filtrele
+GET {{host}}/api/jobapplications?status=Interview
+
+### Ara
+GET {{host}}/api/jobapplications?search=teknoloji
+
+### İkisini birlikte kullan
+GET {{host}}/api/jobapplications?status=Applied&search=frontend
+
+### Özet
+GET {{host}}/api/jobapplications/summary
+
+### Sadece durumu değiştir
+PATCH {{host}}/api/jobapplications/1/status
+Content-Type: application/json
+
+{ "status": "Offer" }
+
+### Geçersiz durum -> 400 görmelisin
+PATCH {{host}}/api/jobapplications/1/status
+Content-Type: application/json
+
+{ "status": "Bilinmiyor" }
+
+### id göndermeyi dene -> artık yok sayılır
+POST {{host}}/api/jobapplications
+Content-Type: application/json
+
+{ "id": 999, "companyName": "Test AŞ", "position": "UI Developer" }
