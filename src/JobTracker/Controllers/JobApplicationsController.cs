@@ -1,12 +1,17 @@
 ﻿using System.Linq.Expressions;
+using System.Security.Claims;
 using JobTracker.Data;
 using JobTracker.Dtos;
 using JobTracker.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace JobTracker.Controllers;
 
+// [Authorize]: bu controller'daki TÜM endpoint'ler için geçerli token şart.
+// Token yoksa ya da geçersizse istek controller'a hiç girmeden 401 döner.
+[Authorize]
 [ApiController]
 [Route("api/[controller]")]
 public class JobApplicationsController : ControllerBase
@@ -18,9 +23,13 @@ public class JobApplicationsController : ControllerBase
         _db = db;
     }
 
-    // --- Entity -> DTO dönüşümü, tek bir yerde ---
-    // Expression<Func<...>>: "kod olarak değil, veri olarak" tutulan fonksiyon.
-    // EF Core bunu okuyup SQL'e çevirebilir (sadece gereken sütunları SELECT eder).
+    // Token'daki kullanıcı Id'si. Claim adı ayara göre "sub" ya da NameIdentifier olarak gelebilir,
+    // ikisini de deniyoruz ki hangisi gelirse çalışsın.
+    private string CurrentUserId =>
+        User.FindFirstValue(ClaimTypes.NameIdentifier)
+        ?? User.FindFirstValue("sub")
+        ?? throw new UnauthorizedAccessException("Token içinde kullanıcı bilgisi yok.");
+
     private static readonly Expression<Func<JobApplication, JobApplicationResponse>> ToResponseExpr =
         a => new JobApplicationResponse
         {
@@ -32,22 +41,20 @@ public class JobApplicationsController : ControllerBase
             Notes = a.Notes
         };
 
-    // Aynı dönüşümü bellekteki tek bir nesne için de lazım olacak (Create'te).
-    // Compile() ile expression'ı normal bir fonksiyona çeviriyoruz, böylece mapping'i iki kere yazmıyoruz.
     private static readonly Func<JobApplication, JobApplicationResponse> ToResponse = ToResponseExpr.Compile();
 
-    // GET /api/jobapplications?status=Interview&search=teknoloji
-    // [FromQuery]: değerler URL'deki ?anahtar=değer kısmından gelir. İkisi de opsiyonel (? ile nullable).
+    // Sadece giriş yapan kullanıcının kayıtları. Her endpoint bu başlangıç sorgusunu kullanıyor,
+    // böylece "UserId filtresini unutma" riski tek yerde çözülüyor.
+    private IQueryable<JobApplication> MyApplications =>
+        _db.JobApplications.Where(a => a.UserId == CurrentUserId);
+
     [HttpGet]
     public async Task<ActionResult<List<JobApplicationResponse>>> GetAll(
         [FromQuery] ApplicationStatus? status,
         [FromQuery] string? search)
     {
-        // IQueryable = "henüz çalışmamış sorgu". Where/OrderBy eklemek veritabanına gitmez,
-        // sadece sorguyu tarif eder. SQL, ToListAsync() anında tek seferde çalışır.
-        IQueryable<JobApplication> query = _db.JobApplications.AsNoTracking();
+        IQueryable<JobApplication> query = MyApplications.AsNoTracking();
 
-        // Filtreleri sadece gönderildiyse ekliyoruz (koşullu sorgu kurma)
         if (status.HasValue)
         {
             query = query.Where(a => a.Status == status.Value);
@@ -56,7 +63,6 @@ public class JobApplicationsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
-            // EF.Functions.Like -> SQL'deki LIKE '%...%'. Şirket adı ya da pozisyonda arar.
             query = query.Where(a =>
                 EF.Functions.Like(a.CompanyName, $"%{term}%") ||
                 EF.Functions.Like(a.Position, $"%{term}%"));
@@ -64,27 +70,21 @@ public class JobApplicationsController : ControllerBase
 
         var items = await query
             .OrderByDescending(a => a.AppliedDate)
-            .Select(ToResponseExpr) // SELECT'i DTO'nun alanlarına daraltır
+            .Select(ToResponseExpr)
             .ToListAsync();
 
         return Ok(items);
     }
 
-    // GET /api/jobapplications/summary -> { "Applied": 5, "Interview": 2, "Rejected": 1, "Offer": 0 }
-    // Frontend'de dashboard kartları için kullanabilirsin.
-    // Not: Bu rota, {id:int} rotasından ÖNCE tanımlı olmak zorunda değil ama "summary" sabit bir segment
-    // olduğu için ASP.NET onu parametreli rotaya göre önceliklendirir.
     [HttpGet("summary")]
     public async Task<ActionResult<Dictionary<string, int>>> GetSummary()
     {
-        // GroupBy -> SQL'de GROUP BY Status + COUNT(*). Veriyi belleğe çekmeden veritabanı sayar.
-        var counts = await _db.JobApplications
+        var counts = await MyApplications
             .AsNoTracking()
             .GroupBy(a => a.Status)
             .Select(g => new { Status = g.Key, Count = g.Count() })
             .ToListAsync();
 
-        // Hiç kaydı olmayan durumlar için 0 yazalım ki frontend "undefined" ile uğraşmasın
         var result = Enum.GetValues<ApplicationStatus>()
             .ToDictionary(
                 s => s.ToString(),
@@ -93,46 +93,44 @@ public class JobApplicationsController : ControllerBase
         return Ok(result);
     }
 
-    // {id:int} -> "id sadece tam sayı olabilir" kısıtı. /api/jobapplications/abc artık 404 döner.
     [HttpGet("{id:int}")]
     public async Task<ActionResult<JobApplicationResponse>> GetById(int id)
     {
-        var item = await _db.JobApplications
+        var item = await MyApplications
             .AsNoTracking()
             .Where(a => a.Id == id)
             .Select(ToResponseExpr)
-            .FirstOrDefaultAsync(); // yoksa null döner
+            .FirstOrDefaultAsync();
 
+        // Başkasının kaydı için de 404 dönüyoruz (403 değil): kaydın var olduğunu bile sızdırmıyoruz
         if (item is null) return NotFound();
 
         return Ok(item);
     }
 
-    // POST /api/jobapplications
     [HttpPost]
     public async Task<ActionResult<JobApplicationResponse>> Create(CreateJobApplicationDto dto)
     {
-        // DTO'dan entity'ye elle map ediyoruz. Neyin içeri girdiği tamamen bizim kontrolümüzde.
         var entity = new JobApplication
         {
             CompanyName = dto.CompanyName.Trim(),
             Position = dto.Position.Trim(),
             Status = dto.Status,
-            AppliedDate = dto.AppliedDate ?? DateTime.UtcNow, // ?? = "null ise sağdakini kullan" (JS'deki ?? ile aynı)
-            Notes = dto.Notes
+            AppliedDate = dto.AppliedDate ?? DateTime.UtcNow,
+            Notes = dto.Notes,
+            UserId = CurrentUserId // sahibi her zaman token'daki kullanıcı, istemci belirleyemez
         };
 
         _db.JobApplications.Add(entity);
-        await _db.SaveChangesAsync(); // INSERT çalışır, entity.Id dolar
+        await _db.SaveChangesAsync();
 
         return CreatedAtAction(nameof(GetById), new { id = entity.Id }, ToResponse(entity));
     }
 
-    // PUT /api/jobapplications/5
     [HttpPut("{id:int}")]
     public async Task<IActionResult> Update(int id, UpdateJobApplicationDto dto)
     {
-        var entity = await _db.JobApplications.FindAsync(id);
+        var entity = await MyApplications.FirstOrDefaultAsync(a => a.Id == id);
         if (entity is null) return NotFound();
 
         entity.CompanyName = dto.CompanyName.Trim();
@@ -145,25 +143,22 @@ public class JobApplicationsController : ControllerBase
         return NoContent();
     }
 
-    // PATCH /api/jobapplications/5/status  body: { "status": "Offer" }
-    // PUT = tüm kaydı değiştir, PATCH = sadece bir parçayı değiştir
     [HttpPatch("{id:int}/status")]
     public async Task<IActionResult> UpdateStatus(int id, UpdateStatusDto dto)
     {
-        var entity = await _db.JobApplications.FindAsync(id);
+        var entity = await MyApplications.FirstOrDefaultAsync(a => a.Id == id);
         if (entity is null) return NotFound();
 
-        entity.Status = dto.Status!.Value; // [Required] sayesinde buraya null gelmez, "!" bunu derleyiciye söyler
+        entity.Status = dto.Status!.Value;
 
         await _db.SaveChangesAsync();
         return NoContent();
     }
 
-    // DELETE /api/jobapplications/5
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
-        var entity = await _db.JobApplications.FindAsync(id);
+        var entity = await MyApplications.FirstOrDefaultAsync(a => a.Id == id);
         if (entity is null) return NotFound();
 
         _db.JobApplications.Remove(entity);

@@ -1,25 +1,34 @@
 ﻿using JobTracker.Models;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
 namespace JobTracker.Data;
 
-// DbContext = veritabanıyla konuştuğumuz köprü. Tüm sorgular ve kayıtlar buradan geçer.
-public class AppDbContext : DbContext
+// DbContext yerine IdentityDbContext: kullanıcı, rol vb. Identity tablolarını da otomatik ekler.
+public class AppDbContext : IdentityDbContext<AppUser>
 {
-    // Ayarlar (hangi veritabanı, hangi bağlantı) dışarıdan, Program.cs'ten gelir.
-    // Buna Dependency Injection denir. React'te Context Provider'dan değer almaya benzer.
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
-    // DbSet = tablo. "JobApplications" tablosuna sorgu atmak için bunu kullanırız.
     public DbSet<JobApplication> JobApplications => Set<JobApplication>();
 
-    // Model ayarlarını burada inceleriz
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Enum'u veritabanında 0,1,2 yerine "Applied","Interview" gibi yazı olarak sakla.
-        // DB'yi açıp baktığında okunabilir olur.
-        modelBuilder.Entity<JobApplication>()
-            .Property(a => a.Status)
-            .HasConversion<string>();
+        // ÖNEMLİ: base çağrısı Identity tablolarının ayarlarını yapar, ilk satır olmalı.
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<JobApplication>(entity =>
+        {
+            // Enum'u yazı olarak sakla
+            entity.Property(a => a.Status).HasConversion<string>();
+
+            // Bir kullanıcının çok başvurusu olur. Kullanıcı silinirse başvuruları da silinir (Cascade).
+            entity.HasOne(a => a.User)
+                  .WithMany()
+                  .HasForeignKey(a => a.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            // Her sorguda UserId ile filtreleyeceğiz, index bunu hızlandırır
+            entity.HasIndex(a => a.UserId);
+        });
     }
 }

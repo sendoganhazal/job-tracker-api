@@ -25,4 +25,9 @@ public class JobApplication
     // string? -> "null olabilir" demek (TypeScript'teki notes?: string)
     [MaxLength(1000)]
     public string? Notes { get; set; }
+    // Bu başvuru kime ait? IdentityUser'ın Id'si string (GUID) olduğu için string.
+    public string UserId { get; set; } = string.Empty;
+
+    // Navigation property: EF Core ilişkiyi buradan anlar (JOIN yapabilmesi için)
+    public AppUser? User { get; set; }
 }

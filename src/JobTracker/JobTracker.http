@@ -1,29 +1,28 @@
-### Duruma göre filtrele
-GET {{host}}/api/jobapplications?status=Interview
-
-### Ara
-GET {{host}}/api/jobapplications?search=teknoloji
-
-### İkisini birlikte kullan
-GET {{host}}/api/jobapplications?status=Applied&search=frontend
-
-### Özet
-GET {{host}}/api/jobapplications/summary
-
-### Sadece durumu değiştir
-PATCH {{host}}/api/jobapplications/1/status
+### 1) Kayıt ol
+POST {{host}}/api/auth/register
 Content-Type: application/json
 
-{ "status": "Offer" }
+{ "email": "hazal@example.com", "password": "Test1234" }
 
-### Geçersiz durum -> 400 görmelisin
-PATCH {{host}}/api/jobapplications/1/status
+### 2) Giriş yap (dönen "token" değerini kopyala)
+POST {{host}}/api/auth/login
 Content-Type: application/json
 
-{ "status": "Bilinmiyor" }
+{ "email": "hazal@example.com", "password": "Test1234" }
 
-### id göndermeyi dene -> artık yok sayılır
+### 3) Token'ı buraya yapıştır
+@token = BURAYA_TOKEN
+
+### Token'sız istek -> 401
+GET {{host}}/api/jobapplications
+
+### Token'lı istek -> 200
+GET {{host}}/api/jobapplications
+Authorization: Bearer {{token}}
+
+### Token'lı başvuru ekle
 POST {{host}}/api/jobapplications
 Content-Type: application/json
+Authorization: Bearer {{token}}
 
-{ "id": 999, "companyName": "Test AŞ", "position": "UI Developer" }
+{ "companyName": "Örnek Teknoloji", "position": "Frontend Developer" }
